@@ -27,7 +27,7 @@ Executing
 -------
 The most basic execution of GOSH can be done as follows:
 ```
-execs/gosh.out --input-graph $string --output-file $string --directed $number --epochs $number
+execs/gosh.out --input-graph $string --output-embedding $string --directed $number --epochs $number
 ```
 - `--input-graph $string`:
 An edge list file with the vertex IDs as zero-indexed integers. i.e, the file should be of the form:

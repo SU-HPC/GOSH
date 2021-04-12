@@ -523,7 +523,7 @@ bool set_global_parameters(int argc, const char **argv){
 bool set_global_parameters(int argc, const char **argv){
   argparse::ArgumentParser parser;
   parser.addArgument("-i", "--input-graph", 1, false);
-  parser.addArgument("-o", "--output-embeddings", 1, false);
+  parser.addArgument("-o", "--output-embedding", 1, false);
   parser.addArgument("--directed", 1, false);
   parser.addArgument("-e", "--epochs", 1, false);
   parser.addArgument("-d", "--dimension", 1, true);
