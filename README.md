@@ -38,7 +38,7 @@ k l
 a b
 ```
 Where `i, j, k, l, a, b` are vertex IDs from the graph. Please note that *all vertices will get embeddings - even those without any edges.*
-- `--output-embeddings $string`:
+- `--output-embedding $string`:
 The file to which the embeddings are to be printed. The embeddings can either be printed as an ASCII formatted text file or a binary file (can be triggered with the `--binary-output` flag).
 The output format in ASCII text is as follows:
 ```
@@ -58,13 +58,22 @@ Many optional parameters can be used to fine-tune the embedding:
 ### Global parameters
 - `-d --dimension $number`: an integer with the dimensionality of the embedding.
 - `-s --negative_samples $number`: number of negative samples used with every positive update.
-- `-a --alpha $number`: A value for the positive sampling strategy to be used in the model based on [VERSE](https://arxiv.org/abs/1803.04742). `alpha = 0` will use an adjacency similarity positive sampling approach while `0 > alpha > 100` will use PPR with `alpha/100` as its damping factor.
 - `--negative-weight $float`: a scaling factor used with negative samples to scale the gradients to be used when updating embeddings during negative updates.
 - `--device-id $nummber`: the ID of the GPU device to be used during the embedding.
 - `--binary-output`: whether the outputs are printed in binary format for compactness and ease of processing on memory. The format of the binary output is as follows:
     - The number of vertices as a signed integer
     - The embedding dimension as s signed integer
     - The embeddings of all the vertices printed sequentially as single precision floats in C++.
+### Sampling parameters
+- `--sampling-algorithm $number`: the method used to create positive samples during training. Currently, two sampling strategies are implemented: 
+    - `--sampling-algorithm 0`: 1-hop neighbor sampling or PPR sampling as described in [VERSE](https://arxiv.org/abs/1803.04742). Depending on the value of `--alpha`. 
+        - `--alpha 0`: positive samples for a node are sampled from its direct neighbors 
+        - `--alpha > 0 && --alpha < 1`: positive samples of a node are nodes reached after performing a Personalized Page Rank random walk, with `--alpha` being the damping factor as defined in [VERSE](https://arxiv.org/abs/1803.04742).
+    - `--sampling-algorithm 1`: random-walk based sampling. With this method, random walks are generated on the CPU and samples are extracted from them and sent to the GPU. It is controlled with three parameters:
+        - `--walk-length $number`: length of each random walk.
+        - `--augmentation-distance $number`: within a walk, from each sequence of `$number$`, all the pairs of nodes are used as poisitive samples.
+        - `--sample-pool-size`: the number of samples to be added to the pool on the CPU which is copied to the GPU.
+- `-a --alpha $number`: A value for the positive sampling strategy to be used in the model based on [VERSE](https://arxiv.org/abs/1803.04742). `alpha = 0` will use an adjacency similarity positive sampling approach while `0 > alpha > 100` will use PPR with `alpha/100` as its damping factor.
  ### Learning Rate Parameters
 - `-l --learning_rate $float`: The global learning rate of the model.
 - `--learning-rate-decay-strategy $num`: The strategy used to decay the learning rate during a level and between different levels. There are four strategies (0/1/2/3), their differences are shown below:

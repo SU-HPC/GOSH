@@ -70,8 +70,9 @@ class TaskQueue {
     condition_variable queue_not_empty;
     mutex queue_mutex;
     int local_threads;
+    int device_id;
   public: 
-    TaskQueue(int _task_queue_threads): local_threads(_task_queue_threads){}
+    TaskQueue(int _task_queue_threads, int _device_id): local_threads(_task_queue_threads), device_id(_device_id){}
     void run();
     void add_to_queue(shared_ptr<Node>& new_node);
     void add_to_queue(shared_ptr<Node>&& new_node);

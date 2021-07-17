@@ -6,12 +6,7 @@
 #include "cuda_profiler_api.h"
 //#define _DEBUG
 #define MEASURE_TIME
-#ifdef _DEBUG
-#define TM_PRINTF(print_flag ,f_, ...) if (print_flag) printf((f_), ##__VA_ARGS__)
-#else
-#define TM_PRINTF(print_flag ,f_, ...)
-#endif
-
+#include "debug.h"
 #define PARTS_HARD_LIMIT 20
 Node::Node(int id):id(id){
   type = node;
@@ -56,6 +51,7 @@ void EmbeddingNode::set_device(){
 }
 
 EmbeddingNode::EmbeddingNode(BigGraphs* bg_o, cudaStream_t * _stream, int _device_id, int id):Node(id), bg(bg_o), stream(_stream), device_id(_device_id){
+  cudaSetDevice(device_id);
   this->type = embedding_node;
   record_event = shared_ptr<cudaEvent_t>(new cudaEvent_t, [=](cudaEvent_t* event){
       CUDA_CHECK(cudaEventDestroy(*event));
@@ -272,6 +268,7 @@ node_type Node::get_type(){
 }
 
 void TaskQueue::execute_node(shared_ptr<Node> node){
+  cudaSetDevice(device_id);
   node->execute();
   for (auto edge : node->outgoing_edges){
     unique_lock<mutex> edge_lock(edge->self_mutex);
@@ -305,8 +302,10 @@ void TaskQueue::run(){
 // local_threads to run the node executions
 #pragma omp parallel num_threads(1+local_threads)
   {
+    cudaSetDevice(device_id);
 #pragma omp single 
     {
+      cudaSetDevice(device_id);
       shared_ptr<Node> curr = nullptr;
       bool graph_completed = false;
       while (!graph_completed || node_queue.size()>0){
@@ -320,6 +319,7 @@ void TaskQueue::run(){
         }
 #pragma omp task firstprivate(curr)
         {
+          cudaSetDevice(device_id);
           execute_node(curr);
         }
         if (curr->get_type() == termination_node){
@@ -333,6 +333,7 @@ void TaskQueue::run(){
 }
 
 void TaskQueue::add_to_queue(shared_ptr<Node>&& new_node){
+  cudaSetDevice(device_id);
   unique_lock<mutex> lock(queue_mutex);
   node_queue.push_front(new_node);
   if (node_queue.size() == 1){
@@ -340,6 +341,7 @@ void TaskQueue::add_to_queue(shared_ptr<Node>&& new_node){
   }
 }
 void TaskQueue::add_to_queue(shared_ptr<Node>& new_node){
+  cudaSetDevice(device_id);
   unique_lock<mutex> lock(queue_mutex);
   node_queue.push_front(new_node);
   if (node_queue.size() == 1){
@@ -470,6 +472,7 @@ void BigGraphs::initialize_private_members(){
 }
 
 void BigGraphs::begin_embedding(){
+  cudaSetDevice(device_id);
   num_rounds = max(1ull,epochs/epoch_batch_size);
   omp_set_nested(1);
 // thread distributions
@@ -478,8 +481,10 @@ void BigGraphs::begin_embedding(){
 // 1 thread for section 2
 #pragma omp parallel num_threads(concurrent_samplers+2)
   {
+      cudaSetDevice(device_id);
 #pragma omp sections
     {
+      cudaSetDevice(device_id);
 #pragma omp section
       {
         bool *** dependency_structure = new bool**[num_pool_sets];
@@ -495,6 +500,7 @@ void BigGraphs::begin_embedding(){
             for (int k =0; k < j+1; k++){
 #pragma omp task firstprivate(i, j, k) depend (inout:dependency_structure[i%num_pool_sets][j][k])
               {
+                cudaSetDevice(device_id);
                 sample_task(i*epoch_batch_size, i, i%num_pool_sets, j, k); 
               }
             }
@@ -556,7 +562,7 @@ void BigGraphs::begin_embedding(){
   printf("Ran %llu/%llu positive samples\n", ((unsigned long long)epochs * (unsigned long long)csr->num_vertices)-total_samples, ((unsigned long long)epochs * (unsigned long long)csr->num_vertices));
 }
 
-BigGraphs::BigGraphs(int _dimension, int _negative_samples, unsigned long long _epochs, double _learning_rate, int _epoch_batch_size, int _alpha, double _negative_weight, int _lrd_strategy, emb_t* _h_embeddings, CSR<vid_t> *_csr, float* _d_sigmoid_lookup_table, int _num_parts_gpu, int _num_pools_gpu, int _concurrent_samplers, int _sampling_threads, int _num_pool_sets, int _task_queue_threads, int _device_id): dimension(_dimension), negative_samples(_negative_samples), epochs(_epochs), learning_rate(_learning_rate), epoch_batch_size(_epoch_batch_size), alpha(_alpha), negative_weight(_negative_weight), lrd_strategy(_lrd_strategy), h_embeddings(_h_embeddings), csr(_csr), d_sigmoid_lookup_table(_d_sigmoid_lookup_table), num_parts_gpu(_num_parts_gpu), num_pools_gpu(_num_pools_gpu), concurrent_samplers(_concurrent_samplers), sampling_threads(_sampling_threads), task_queue(_task_queue_threads), num_pool_sets(_num_pool_sets), device_id(_device_id){
+BigGraphs::BigGraphs(int _dimension, int _negative_samples, unsigned long long _epochs, double _learning_rate, int _epoch_batch_size, int _alpha, double _negative_weight, int _lrd_strategy, emb_t* _h_embeddings, CSR<vid_t> *_csr, float* _d_sigmoid_lookup_table, int _num_parts_gpu, int _num_pools_gpu, int _concurrent_samplers, int _sampling_threads, int _num_pool_sets, int _task_queue_threads, int _device_id): dimension(_dimension), negative_samples(_negative_samples), epochs(_epochs), learning_rate(_learning_rate), epoch_batch_size(_epoch_batch_size), alpha(_alpha), negative_weight(_negative_weight), lrd_strategy(_lrd_strategy), h_embeddings(_h_embeddings), csr(_csr), d_sigmoid_lookup_table(_d_sigmoid_lookup_table), num_parts_gpu(_num_parts_gpu), num_pools_gpu(_num_pools_gpu), concurrent_samplers(_concurrent_samplers), sampling_threads(_sampling_threads), task_queue(_task_queue_threads, _device_id), num_pool_sets(_num_pool_sets), device_id(_device_id){
 #ifdef MEASURE_TIME
   double start = omp_get_wtime();
 #endif
@@ -724,7 +730,7 @@ shared_ptr<Node> BigGraphs::create_execution_graph(){
       if (sub_part_idx == -1){
        throw 2; 
       }
-      shared_ptr<Node> kernel_node = make_shared<KernelNode>(this, kernel_streams[k%2].get(), main, sub, main_part_idx, sub_part_idx, starting_epoch, r, device_id, node_counter++);
+      shared_ptr<Node> kernel_node = make_shared<KernelNode>(this, kernel_streams[k%kernel_streams.size()].get(), main, sub, main_part_idx, sub_part_idx, starting_epoch, r, device_id, node_counter++);
       // make the sample node of this kernel a dependent of the kernel_node
       sample_node->add_edge(kernel_node);
       // make the kernel node depend on its swaps

@@ -73,10 +73,16 @@ template <class T>
 CSR<T>::CSR(ll nv, ll ne, T *v, T *e, T *w, T *map) : num_edges(ne), num_vertices(nv), E(e), V(v), W(w), map(map)
 {
   sizeOfUnit = sizeof(T);
+    if (alias_table_imp ==0){
+    construct_ps_alias_table_gv();
+    construct_ns_alias_table_gv(0.75);
+  } else {
+    construct_alias_table_line();
+  }
 }
 
 template <class T>
-CSR<T>::CSR(string fname)
+CSR<T>::CSR(string fname, int ati): alias_table_imp(ati)
 {
   sizeOfUnit = sizeof(T);
   int flag = read_bcsr(fname);
@@ -85,10 +91,16 @@ CSR<T>::CSR(string fname)
     cout << "Failed to read CSR from bcsr file.\n";
     throw 1;
   }
+   if (alias_table_imp == 0){  
+    construct_ps_alias_table_gv();
+    construct_ns_alias_table_gv(0.75);
+  } else {
+    construct_alias_table_line();
+  }
 }
 
 template <class T>
-CSR<T>::CSR(string fname, const bool directed, const bool weighted, bool binary)
+CSR<T>::CSR(string fname, const bool directed, const bool weighted, bool binary, int ati)
 {
   sizeOfUnit = sizeof(T);
   //int flag = mtx2csr(fname);
@@ -101,6 +113,13 @@ CSR<T>::CSR(string fname, const bool directed, const bool weighted, bool binary)
   {
     cout << "Failed to read CSR from mtx file.\n";
     throw 1;
+  }
+  alias_table_imp = ati;
+  if (alias_table_imp == 0){  
+    construct_ps_alias_table_gv();
+    construct_ns_alias_table_gv(0.75);
+  } else {
+    construct_alias_table_line();
   }
 }
 
@@ -133,6 +152,22 @@ CSR<T>::CSR(CSR &copy) : num_edges(copy.num_edges), num_vertices(copy.num_vertic
   if (copy.W != NULL)
     for (unsigned long long i = 0; i < num_edges; i++)
       W[i] = copy.W[i];
+  v_alias.size = copy.v_alias.size;
+  v_alias.alias_p = new float[copy.v_alias.size];
+  v_alias.alias_v = new T[copy.v_alias.size];
+  for (int i = 0; i < copy.v_alias.size; i++)
+  {
+    v_alias.alias_p[i] = copy.alias_p[i];
+    v_alias.alias_v[i] = copy.alias_v[i];
+  }
+  ns_alias.size = copy.size;
+  ns_alias.alias_p = new float[copy.ns_alias.size];
+  ns_alias.alias_v = new T[copy.ns_alias.size];
+  for (int i = 0; i < copy.ns_alias.size; i++)
+  {
+    ns_alias.alias_p[i] = copy.alias_p[i];
+    ns_alias.alias_v[i] = copy.alias_v[i];
+  }
 }
 
 template <class T>
@@ -994,6 +1029,154 @@ T CSR<T>::get_jaccard_matching(T v, T size, float *jaccard_edges, T *match)
     }
   }
   return best;
+}
+
+template <class T>
+void CSR<T>::construct_ps_alias_table_gv(){
+  v_alias.alias_p = new char[num_vertices];
+  v_alias.alias_v = new T[num_vertices];
+  v_alias.size = num_vertices;
+  double * probs= new double [num_vertices];
+  for (int i =0 ; i<num_vertices; i++){
+    unsigned long long ne = V[i+1]-V[i]>0 ? V[i+1]-V[i] : 0;
+    if (ne>num_edges){
+      printf("bad edges %d %lld\n", i, ne);
+    }
+    probs[i] = ne;
+  }
+  construct_alias_table_gv(v_alias.alias_v, v_alias.alias_p, probs, v_alias.size);
+}
+
+template <class T>
+void CSR<T>::construct_ns_alias_table_gv(float factor){
+  ns_alias.alias_p = new char[num_vertices];
+  ns_alias.alias_v = new T[num_vertices];
+  ns_alias.size = num_vertices;
+  double * probs = new double[num_vertices];
+  for (int i =0; i<num_vertices; i++){
+    double ne = V[i+1]-V[i]>0 ? V[i+1]-V[i] : 0;
+    probs[i] = pow(ne, factor);
+    //if (ne == 0) printf("%f\n", probs[i]);
+    //if (i%100 == 0) printf("i %d probs[i] %f\n", i, probs[i]);
+  }
+  construct_alias_table_gv(ns_alias.alias_v, ns_alias.alias_p, probs, ns_alias.size);
+}
+
+template <class T>
+void CSR<T>::construct_alias_table_gv(T *& alias_v, char *& alias_p, double * probs, unsigned long long size){
+  double norm=0;
+  for (int i =0 ; i<num_vertices; i++){
+    norm+=probs[i];
+  }
+  // double norm = 0;
+  // for (int i =0; i<num_vertices; i++){
+  //   norm+= probs[i];
+  // }
+  norm = norm/num_vertices;
+  for (int i =0; i<num_vertices; i++){
+    probs[i]/=norm;
+  }
+
+  queue<T> large, little;
+  for (int i = 0; i < num_vertices; i++) {
+      if (probs[i] < 1)
+          little.push(i);
+      else
+          large.push(i);
+  }
+  while (!little.empty() && !large.empty()) {
+      T i = little.front(), j = large.front();
+      little.pop();
+      large.pop();
+      alias_v[i] = j;
+      probs[j] = probs[i] + probs[j] - 1;
+      if (probs[j] < 1)
+          little.push(j);
+      else
+          large.push(j);
+  }
+  // suppress some trunction error
+  while (!little.empty()) {
+      T i = little.front();
+      little.pop();
+      alias_v[i] = i;
+  }
+  while (!large.empty()) {
+      T i = large.front();
+      large.pop();
+      alias_v[i] = i;
+  }
+    // making probs in the range 100
+    for (int i = 0; i<num_vertices; i++){
+      alias_p[i] =  int(probs[i]*100)%101;
+      if (alias_p[i]>100){
+        printf("What even is this %f %d\n", probs[i], alias_p[i] );
+      }
+    }
+    for (int i =0; i<num_vertices; i++){
+      if (alias_v[i]>=num_vertices){
+        printf("vbad aliasv %d alias %d", i, alias_v[i]);
+      }
+    }
+    delete [] probs;
+}
+
+
+template <class T>
+void CSR<T>::construct_alias_table_line()
+{
+  v_alias.alias_p = new char[num_vertices];
+  v_alias.alias_v = new T[num_vertices];
+  v_alias.size = num_vertices;
+
+  float *norm_prob = new float[num_vertices];
+  T *large_block = new T[num_vertices];
+  T *small_block = new T[num_vertices];
+
+  float sum = 0;
+  T cur_small_block, cur_large_block;
+  T num_small_block = 0, num_large_block = 0;
+  T add;
+  for (T k = 0; k != num_vertices; k++)
+  {
+    add = V[k + 1] - V[k] > 0 ? V[k + 1] - V[k] : 0;
+    sum += add;
+  }
+  for (T k = 0; k != num_vertices; k++)
+  {
+    add = V[k + 1] - V[k] > 0 ? V[k + 1] - V[k] : 0;
+    norm_prob[k] = add * num_vertices / sum;
+  }
+
+  for (long long k = num_vertices - 1; k >= 0; k--)
+  {
+    if (norm_prob[k] < 1)
+      small_block[num_small_block++] = k; // adding to L
+    else
+      large_block[num_large_block++] = k;
+  }
+
+  while (num_small_block && num_large_block)
+  {
+    cur_small_block = small_block[--num_small_block];
+    cur_large_block = large_block[--num_large_block];
+    v_alias.alias_p[cur_small_block] = int(100*norm_prob[cur_small_block]);
+    v_alias.alias_v[cur_small_block] = cur_large_block;
+    norm_prob[cur_large_block] = norm_prob[cur_large_block] + norm_prob[cur_small_block] - 1;
+    if (norm_prob[cur_large_block] < 1)
+      small_block[num_small_block++] = cur_large_block;
+    else
+      large_block[num_large_block++] = cur_large_block;
+  }
+
+  while (num_large_block)
+    v_alias.alias_p[large_block[--num_large_block]] = 1;
+  while (num_small_block)
+    v_alias.alias_p[small_block[--num_small_block]] = 1;
+
+  delete[] norm_prob;
+  delete[] small_block;
+  delete[] large_block;
 }
 
 /*

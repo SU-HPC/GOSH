@@ -26,6 +26,7 @@ using namespace std;
 #include "utils/gpu_functions.h"
 // ArgumentParser object
 #include "utils/argparse/argparse.hpp"
+#include "utils/random_walk.cu"
 
 // Coarsening parameters
 #define LR_REF_NV 100000
@@ -89,6 +90,17 @@ CSR<vid_t>* csr; // the original input graph in CSR format
 
 vector<pair<int,int>> num_parts; // the num_parts counts for the levels using big graphs
 
+int sampling_algorithm = 0; // Currently, PPR sampling (which includes 1-hop neighborhood sampling) and random-walk based sampling are implemented
+// sampling_algorithm == 0 -> PPR sampling (setting alpha = 0 turns it to 1-hop neighborhood sampling)
+// sampling_algorithm == 1 -> random walk sampling
+
+// Random-walk sampling parameters
+int walk_length = 10; 
+int augmentation_distance = 3; // The size of the window within a walk from which samples are extracted.
+// within a walk of length l, augmentation distance == a means that from every group of consecutive a
+// vertices, all the pairs in the group will form positive samples
+size_t sample_pool_size = 1000000; // Size of sample pool that will be sent to the GPU
+
 // random number generators for initializing the embedding
 minstd_rand gen(std::random_device{}());
 uniform_real_distribution<double> dist(0, 1);
@@ -141,6 +153,7 @@ int main(int argc, char * argv[]){
   emb_t * d_embeddings=NULL;
   vid_t* d_V;
   vid_t* d_A;
+  random_walk_training<vid_t, vid_t>* random_walker;
   unsigned long long size_of_shared_array; // shared memory size used by embedding kernels
 
   if (!set_global_parameters(argc, const_cast<const char**>(argv))){
@@ -154,7 +167,18 @@ int main(int argc, char * argv[]){
   cudaGetDeviceProperties(&prop, deviceID);
   printf("Device Number: %d\n", deviceID);
   printf("  Device name: %s\n", prop.name);
-  cudaDeviceReset();
+  if (sampling_algorithm == 0) {
+    printf("Using PPR sampling\n");
+    // We scale the epochs such that an epoch is carrying out as many positive samples
+    // as there are edges
+    // We carry out the scaling here as our kernels synchronize at every |V| samples
+    n_epochs *= float(csr->num_edges) / float(csr->num_vertices)/2;
+    printf("Scaled epochs to %d\n", n_epochs);
+  }
+  else if (sampling_algorithm == 1){
+    printf("Using random-walks\n");
+    random_walker = new random_walk_training<vid_t, vid_t>(sample_pool_size, 6, sampling_threads, deviceID, negative_samples);
+  } 
   init_sig_table(sigmoid_lookup_table);
   CUDA_CHECK(cudaMalloc((void**)&d_sigmoid_lookup_table, SIGMOID_TABLE_SIZE*sizeof(float)));
   CUDA_CHECK(cudaMemcpy(d_sigmoid_lookup_table, sigmoid_lookup_table, sizeof(float)*SIGMOID_TABLE_SIZE, cudaMemcpyHostToDevice));
@@ -245,9 +269,7 @@ int main(int argc, char * argv[]){
   apply_dist_strategy(n_epochs, graphs.size(),  epoch_distribution, emb_strategy);
   initialize_embeddings(graphs[graphs.size()-1]->num_vertices, dimension,h_embeddings);
   double learning_rate_e;
-  double learning_rate_ec;
   double prev = omp_get_wtime();
-  int batch_size_small_graphs=1;
   for(int i = graphs.size()-1; i >= 0; i--){
     if (lrd_strategy == 1 || lrd_strategy == 3){
       if(graphs[i]->num_vertices > LR_REF_NV){
@@ -272,14 +294,23 @@ int main(int argc, char * argv[]){
       cudaMemcpy(d_embeddings, h_embeddings, sizeof(emb_t)*graphs[i]->num_vertices*dimension, cudaMemcpyHostToDevice);
       cudaMemcpy(d_A, graphs[i]->E, sizeof(unsigned int)*graphs[i]->num_edges, cudaMemcpyHostToDevice);
       cudaMemcpy(d_V, graphs[i]->V, sizeof(unsigned int)*(graphs[i]->num_vertices + 1), cudaMemcpyHostToDevice);
-      //
-      for (int j = 0;j <epoch_distribution[graphs.size() - 1 - i]/batch_size_small_graphs;j++){
-        if (lrd_strategy<2){
-          learning_rate_ec = (max(1-float(j)*1.0/(epoch_distribution[graphs.size() - 1 - i]/batch_size_small_graphs), 1e-4f))*(learning_rate_e);
-        } else {
-          learning_rate_ec = learning_rate_e;
+      unsigned long long num_samples = epoch_distribution[graphs.size() - 1 - i] * graphs[i]->num_edges;
+      if (sampling_algorithm == 0){
+        double learning_rate_ec;
+        int batch_size_small_graphs=1;
+        for (int j = 0;j <epoch_distribution[graphs.size() - 1 - i]/batch_size_small_graphs;j++){
+          if (lrd_strategy<2){
+            learning_rate_ec = (max(1-float(j)*1.0/(epoch_distribution[graphs.size() - 1 - i]/batch_size_small_graphs), 1e-4f))*(learning_rate_e);
+          } else {
+            learning_rate_ec = learning_rate_e;
+          }
+          Embedding_Kernel<<<NUM_BLOCKS, NUM_THREADS, size_of_shared_array>>>(graphs[i]->num_vertices, batch_size_small_graphs, d_V, d_A, d_embeddings, dimension, negative_samples, learning_rate_ec, d_sigmoid_lookup_table, j, epoch_distribution[graphs.size() - 1 - i]/batch_size_small_graphs, g_alpha, negative_weight, WARP_SIZE, WARPS_PER_BLOCK, NUM_WARPS); //call for device
         }
-        Embedding_Kernel<<<NUM_BLOCKS, NUM_THREADS, size_of_shared_array>>>(graphs[i]->num_vertices, batch_size_small_graphs, d_V, d_A, d_embeddings, dimension, negative_samples, learning_rate_ec, d_sigmoid_lookup_table, j, epoch_distribution[graphs.size() - 1 - i]/batch_size_small_graphs, g_alpha, negative_weight, WARP_SIZE, WARPS_PER_BLOCK, NUM_WARPS); //call for device
+      } else if (sampling_algorithm == 1){
+        random_walker->train_num_samples(num_samples, lrd_strategy, learning_rate_e, walk_length, augmentation_distance, graphs[i], [&](CSR<vid_t>* csr, vid_t* d_positive_sample_array, vid_t* d_negative_sample_array, float lr, int sample_pool_size, cudaStream_t* stream){
+
+            Embedding_Kernel_SP<<<NUM_BLOCKS, NUM_THREADS, size_of_shared_array, *stream>>>(csr->num_vertices, sample_pool_size, d_positive_sample_array, d_negative_sample_array, d_embeddings, lr, dimension, negative_samples, negative_weight, WARPS_PER_BLOCK, WARP_SIZE, NUM_WARPS); //call for device
+        });
       }
       CUDA_CHECK(cudaMemcpy(h_embeddings, d_embeddings, sizeof(emb_t) * graphs[i]->num_vertices * dimension, cudaMemcpyDeviceToHost));      
     } else {
@@ -290,7 +321,13 @@ int main(int argc, char * argv[]){
         switched_to_bg = true;
       }
       try{
-        BigGraphs bg_embedder(dimension, negative_samples, epoch_distribution[graphs.size() - 1 - i], learning_rate_e, epoch_batch_size, g_alpha, negative_weight, lrd_strategy, h_embeddings, graphs[i], d_sigmoid_lookup_table, num_parts_gpu, num_pools_gpu, concurrent_samplers, sampling_threads, num_sample_pool_sets, task_queue_threads, deviceID ); // cocs samp tq_threads sample_thread
+        size_t bg_epochs = epoch_distribution[graphs.size() - 1 - i];
+        if (sampling_algorithm == 1){
+          printf("Scaling epochs from %lu to ", bg_epochs);
+          bg_epochs *= float(graphs[0]->num_edges)/graphs[0]->num_vertices;
+          printf("%lu\n", bg_epochs);
+        }
+        BigGraphs bg_embedder(dimension, negative_samples, bg_epochs, learning_rate_e, epoch_batch_size, g_alpha, negative_weight, lrd_strategy, h_embeddings, graphs[i], d_sigmoid_lookup_table, num_parts_gpu, num_pools_gpu, concurrent_samplers, sampling_threads, num_sample_pool_sets, task_queue_threads, deviceID ); // cocs samp tq_threads sample_thread
         bg_embedder.begin_embedding(); 
         num_parts.push_back(make_pair(i,bg_embedder.num_parts));
       } catch (int error){
@@ -457,7 +494,12 @@ void print_global_parameters(){
   printf("Device ID: %d\n", deviceID);
   printf("Directed: %d\n", directed);
   printf("Binary output: %d\n", binary_output);
+  printf("-------\n");
+  printf("Sampling algorithm: %s\n", (sampling_algorithm == 0 ? "PPR" : "Random-walks"));
   printf("Alpha: %d\n", g_alpha);
+  printf("Walk length: %d\n", walk_length);
+  printf("Augmentation distance: %d\n", augmentation_distance);
+  printf("Sample pool size: %lu\n", sample_pool_size);
   printf("-------\n");
   printf("Learning rate: %f\n", learning_rate);
   printf("Learning rate decay strategy: %d\n", lrd_strategy);
@@ -481,12 +523,11 @@ void print_global_parameters(){
 #ifndef _ARGPARSE
 
 void usage(){
-  printf("input format:\ninput_graph dimension negative_samples epochs learning_rate epoch_batch_size alpha strategy smoothing_ratio stopping_threshold stopping_precision matching_threshold_ratio min_vertices_in_graph negative_weight lrd_strategy num_parts_gpu num_pools_gpu sampling_threads concurrent_samplers num_sample_pool_sets task_queue_threads device_id directed binary_output apply_coarsening output_path \n");
-  printf("input format:\ninput_graph dimension negative_samples epochs learning_rate epoch_batch_size alpha strategy smoothing_ratio stopping_threshold negative_weight lrd_strategy num_parts_gpu num_pools_gpu sampling_threads concurrent_samplers num_sample_pool_sets task_queue_threads device_id directed binary_output apply_coarsening output_path \n");
+  printf("input format:\ninput_graph dimension negative_samples epochs learning_rate epoch_batch_size alpha emb_strategy smoothing_ratio stopping_threshold stopping_precision matching_threshold_ratio min_vertices_in_graph negative_weight lrd_strategy num_parts_gpu num_pools_gpu sampling_threads concurrent_samplers num_sample_pool_sets task_queue_threads sampling_algorithm walk_length augmentation_distance sample_pool_size device_id directed binary_output apply_coarsening output_path \n");
 }
 
 bool set_global_parameters(int argc, const char **argv){
-  if (argc < 21) {
+  if (argc < 31) {
     usage();
     return false;
   }
@@ -511,11 +552,15 @@ bool set_global_parameters(int argc, const char **argv){
   concurrent_samplers = atoi(argv[19]);
   num_sample_pool_sets = atoi(argv[20]);
   task_queue_threads = atoi(argv[21]);
-  deviceID = atoi(argv[22]);
-  directed = atoi(argv[23]);
-  binary_output = atoi(argv[24]);
-  apply_coarsening = atoi(argv[25]);
-  output_file_name = string(argv[26]); 
+  sampling_algorithm = atoi(argv[22]); 
+  walk_length = atoi(argv[23]);
+  augmentation_distance = atoi(argv[24]);
+  sample_pool_size = atoi(argv[25]);
+  deviceID = atoi(argv[26]);
+  directed = atoi(argv[27]);
+  binary_output = atoi(argv[28]);
+  apply_coarsening = atoi(argv[29]);
+  output_file_name = string(argv[30]); 
 
   return true;
 }
@@ -527,7 +572,6 @@ bool set_global_parameters(int argc, const char **argv){
   parser.addArgument("--directed", 1, false);
   parser.addArgument("-e", "--epochs", 1, false);
   parser.addArgument("-d", "--dimension", 1, true);
-  parser.addArgument("-a", "--alpha", 1, true);
   parser.addArgument("-s", "--negative-samples", 1, true);
   parser.addArgument("-b", "--binary-output", 0 , true);
   parser.addArgument("--device-id", 1, true);
@@ -553,6 +597,11 @@ bool set_global_parameters(int argc, const char **argv){
   parser.addArgument("--num-parts", 1, true);
   parser.addArgument("--num-sample-pool-sets",1, true);
 
+  parser.addArgument("--sampling-algorithm", 1, true);
+  parser.addArgument("-a", "--alpha", 1, true);
+  parser.addArgument("--walk-length", 1, true);
+  parser.addArgument("--augmentation-distance", 1, true);
+  parser.addArgument("--sample-pool-size", 1, true);
   try {
     parser.parse(argc, argv);
   } catch(...){
@@ -581,7 +630,7 @@ bool set_global_parameters(int argc, const char **argv){
   if (parser.gotArgument("epoch-batch-size"))
     epoch_batch_size =parser.retrieve<int>("epoch-batch-size");  
   if (parser.gotArgument("a"))
-    g_alpha =parser.retrieve<int>("a"); 
+    g_alpha =100*parser.retrieve<float>("a"); 
   if (parser.gotArgument("epoch-strategy"))
     emb_strategy =parser.retrieve<string>("epoch-strategy"); 
   if (parser.gotArgument("smoothing-ratio"))
@@ -604,6 +653,14 @@ bool set_global_parameters(int argc, const char **argv){
     concurrent_samplers =parser.retrieve<int>("concurrent-samplers");  
   if (parser.gotArgument("task-queue-threads"))
     task_queue_threads =parser.retrieve<int>("task-queue-threads");
+  if (parser.gotArgument("sampling-algorithm"))
+    sampling_algorithm =parser.retrieve<int>("sampling-algorithm"); 
+  if (parser.gotArgument("walk-length"))
+    walk_length =parser.retrieve<int>("walk-length"); 
+  if (parser.gotArgument("augmentation-distance"))
+    augmentation_distance =parser.retrieve<int>("augmentation-distance"); 
+  if (parser.gotArgument("sample-pool-size"))
+    sample_pool_size =parser.retrieve<int>("sample-pool-size"); 
   if (parser.gotArgument("device-id")) 
   deviceID =parser.retrieve<int>("device-id"); 
   if (parser.gotArgument("b"))

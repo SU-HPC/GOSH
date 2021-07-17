@@ -217,4 +217,92 @@ __global__ void Big_Graphs_Embedding_Kernel(emb_t *source_bin, emb_t* dest_bin, 
   }  
   //if (id == 0) printf("finished %d %d\n",source_part_id, dest_part_id); 
 }
+const unsigned kFullMask = 0xFFFFFFFF;
+  template <class T>
+    __device__ T WarpBroadcast(T value, int lane_id) {
+#if __CUDACC_VER_MAJOR__ >= 9
+      return __shfl_sync(kFullMask, value, lane_id);
+#else
+      return __shfl(value, lane_id);
+#endif
+    }
+  template <class T>
+    __device__ T WarpReduce(T value) {
+#pragma unroll
+      for (int delta = 1; delta < 32; delta *= 2)
+#if __CUDACC_VER_MAJOR__ >= 9
+        value += __shfl_down_sync(kFullMask, value, delta);
+#else
+      value += __shfl_down(value, delta);
+#endif
+      return value;
+    }
+
+#define MAX_ALPHA 101
+#define FULL_MASK 0xffffffff
+#define NEGATIVE_WEIGHT 5
+__device__ void single_sample_update_pos(emb_t * vEmbeddings, emb_t * uEmbeddings, float learning_rate, int id, float bias, int dimension, int WARP_SIZE){
+   int start = id % WARP_SIZE;
+   //double myscore = 0;
+   float x = 0;
+   for (int i=start ; i < dimension; i += WARP_SIZE){
+     x += vEmbeddings[i] * uEmbeddings[i];
+   }
+   x = WarpBroadcast(WarpReduce(x), 0);
+   x-=bias;
+   float prob = x > 0 ? 1 / (1 + exp(-x)) : exp(x) / (exp(x) + 1);
+   prob = prob - 1;
+   // perform update on embedding of graphs
+   float lol = prob  * learning_rate;
+   for (int i = start; i < dimension; i += WARP_SIZE){
+     float u = uEmbeddings[i];
+     float v = vEmbeddings[i];
+     vEmbeddings[i] -= u * lol;
+     uEmbeddings[i] -= v * lol;
+   }
+}
+__device__ void single_sample_update_neg(emb_t * vEmbeddings, emb_t * uEmbeddings, float learning_rate, int id, float bias, int dimension, float negative_weight, int WARP_SIZE){
+   int start = id % WARP_SIZE;
+   //double myscore = 0;
+   float x = 0;
+   for (int i=start ; i < dimension; i += WARP_SIZE){
+     x += vEmbeddings[i] * uEmbeddings[i];
+   }
+   x = WarpBroadcast(WarpReduce(x), 0);
+   x-=bias;
+   float prob = x > 0 ? 1 / (1 + exp(-x)) : exp(x) / (exp(x) + 1);
+   // perform update on embedding of graphs
+   float lol = prob *negative_weight * learning_rate;
+   for (int i = start; i < dimension; i += WARP_SIZE){
+     float u = uEmbeddings[i];
+     float v = vEmbeddings[i];
+     vEmbeddings[i] -= u * lol;
+     uEmbeddings[i] -= v * lol;
+   }
+}
+__global__ void Embedding_Kernel_SP(unsigned int d_num_vertices, unsigned long samples_per_pool, unsigned int* d_sample_array, unsigned int* d_fake,  emb_t * d_embeddings, float d_lr, int dimension, int negative_samples, float negative_weight, int WARPS_PER_BLOCK, int WARP_SIZE, int NUM_WARPS){
+  //A warp per vertex strategy
+  const unsigned int id = threadIdx.x + blockIdx.x*blockDim.x;
+  const unsigned int warp_num = id/WARP_SIZE;
+  const float nce_bias = logf(d_num_vertices);
+  const float nce_neg_bias=logf(d_num_vertices/(negative_samples));
+  unsigned int source, p_sample, n_sample;
+  extern __shared__ emb_t emb_s[];
+  emb_t* myemb_s = &emb_s[(warp_num%WARPS_PER_BLOCK)*dimension]; 
+  emb_t* myemb_g;
+  for (int i = warp_num; i<samples_per_pool; i+=NUM_WARPS){
+    source = d_sample_array[i*2];
+    p_sample = d_sample_array[i*2+1];
+    myemb_g = d_embeddings+(dimension*source);
+    for (int j =id%WARP_SIZE; j<dimension; j+=WARP_SIZE)
+      myemb_s[j] = myemb_g[j];
+    single_sample_update_pos(myemb_s, d_embeddings+dimension*p_sample, d_lr, id, nce_bias, dimension, WARP_SIZE); //update one positive sample
+    for(unsigned int k = 0; k < negative_samples; k++){
+      n_sample = d_fake[i*negative_samples+k];
+      single_sample_update_neg(myemb_s, d_embeddings+dimension*n_sample, d_lr, id, nce_neg_bias, dimension, negative_weight, WARP_SIZE);
+    }
+    for (int l =id%WARP_SIZE; l<dimension; l+=WARP_SIZE)
+      myemb_g[l] = myemb_s[l];
+  }
+}
 

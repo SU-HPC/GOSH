@@ -7,10 +7,17 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <queue>
 using namespace std; 
 // class definition of CSR                                                                                                                                                  // This class encapsulates all the data members required for a single weighted or unweighted graph stored in a Compressed Sparse Row matrix format
 // It is a templated class where the data type of the vertices IDs is dependant on initialization (for storage optimization purposes) 
-typedef long long ll;                     
+typedef long long ll;  
+template <class T>   
+struct alias_table{
+  ll size;
+  T* alias_v;
+  char* alias_p;
+};                
 template <class T>
 class CSR       
 {
@@ -22,6 +29,11 @@ class CSR
     int mtx2csr(string fname, bool directed, bool weighted);  
     int bmtx2csr(string fname, bool directed, bool weighted);  
     size_t sizeOfUnit;
+
+    void construct_alias_table_gv(T*&, char*&, double*, unsigned long long);
+    void construct_alias_table_line();
+    void construct_ns_alias_table_gv(float);
+    void construct_ps_alias_table_gv();
 
     void skip_mtx_comments(ifstream &file);
 
@@ -43,12 +55,14 @@ class CSR
     T *E; // the array of edges    
     T *W;
     T * map;
+    alias_table<T> v_alias, ns_alias;
     ll num_vertices = 0;
     ll num_edges = 0;  
+    int alias_table_imp = 0;
     CSR(ll nv, ll ne, T *V, T *E, T *W = NULL, T *map = NULL);
     CSR(CSR &); 
-    CSR(string fname);
-    CSR(string fname, bool directed, bool weighted, bool binary = false);
+    CSR(string fname, int ati = 0);
+    CSR(string fname, bool directed, bool weighted, bool binary = false, int ati=0);
     ~CSR(); 
     bool is_weighted() const;  
     T get_correct_edge_index(T v, T * edge_place);
