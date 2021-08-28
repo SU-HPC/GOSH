@@ -350,6 +350,8 @@ int CSR<T>::bmtx2csr(string file_path, bool directed, bool weighted)
     }
     mtx.push_back(temp);
     //
+    read_v = fread(&v, sizeof(T), 1, file);
+    read_w = fread(&w, sizeof(T), 1, file);
   }
   if /*constexpr*/ (!directed)
   { //if undirected graph edge amount is double the line amount

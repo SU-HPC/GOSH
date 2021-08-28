@@ -1,2 +1,3 @@
 execs/*
 *.swp
+*.o
