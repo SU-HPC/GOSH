@@ -395,16 +395,16 @@ void BigGraphs::initialize_private_members(){
   WARPS_PER_BLOCK = NUM_THREADS / WARP_SIZE;
   NUM_WARPS = WARPS_PER_BLOCK * NUM_BLOCKS;
   size_of_shared_array=dimension*(WARPS_PER_BLOCK)*sizeof(emb_t);
-  sample_stream = make_shared<cudaStream_t>();
   for (int i =0; i<num_parts_gpu; i++){
     part_streams.push_back(make_shared<cudaStream_t>());
     CUDA_CHECK(cudaStreamCreateWithFlags(part_streams[i].get(), cudaStreamNonBlocking));
   }
-  kernel_streams.push_back(make_shared<cudaStream_t>());
-  kernel_streams.push_back(make_shared<cudaStream_t>());
+  for (int ks = 0; ks < NUM_KERNEL_STREAMS; ks++){
+    kernel_streams.push_back(make_shared<cudaStream_t>());
+    CUDA_CHECK(cudaStreamCreateWithFlags(kernel_streams[ks].get(),cudaStreamNonBlocking));
+  }
+  sample_stream = make_shared<cudaStream_t>();
   CUDA_CHECK(cudaStreamCreateWithFlags(sample_stream.get(),cudaStreamNonBlocking));
-  CUDA_CHECK(cudaStreamCreateWithFlags(kernel_streams[0].get(),cudaStreamNonBlocking));
-  CUDA_CHECK(cudaStreamCreateWithFlags(kernel_streams[1].get(),cudaStreamNonBlocking));
 
   calculate_big_graphs_resources(csr->num_vertices, csr->num_edges, num_parts_gpu, num_pools_gpu, dimension, num_parts, vertices_per_part, epoch_batch_size, vids_per_pool);
   ////// allocation
@@ -487,6 +487,7 @@ void BigGraphs::begin_embedding(){
       cudaSetDevice(device_id);
 #pragma omp section
       {
+        cudaSetDevice(device_id);
         bool *** dependency_structure = new bool**[num_pool_sets];
         for (int i =0; i<num_pool_sets; i++){
           dependency_structure[i] =new bool*[num_parts];
@@ -730,7 +731,7 @@ shared_ptr<Node> BigGraphs::create_execution_graph(){
       if (sub_part_idx == -1){
        throw 2; 
       }
-      shared_ptr<Node> kernel_node = make_shared<KernelNode>(this, kernel_streams[k%kernel_streams.size()].get(), main, sub, main_part_idx, sub_part_idx, starting_epoch, r, device_id, node_counter++);
+      shared_ptr<Node> kernel_node = make_shared<KernelNode>(this, kernel_streams[k%NUM_KERNEL_STREAMS].get(), main, sub, main_part_idx, sub_part_idx, starting_epoch, r, device_id, node_counter++);
       // make the sample node of this kernel a dependent of the kernel_node
       sample_node->add_edge(kernel_node);
       // make the kernel node depend on its swaps

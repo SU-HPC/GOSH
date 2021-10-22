@@ -103,6 +103,7 @@ class BigGraphs{
     int WARPS_PER_BLOCK;
     int WARP_SIZE;
     int NUM_WARPS;
+    int NUM_KERNEL_STREAMS=1;
     //// CUDA streams for exection
     shared_ptr<cudaStream_t> sample_stream; 
     vector<shared_ptr<cudaStream_t>> part_streams;

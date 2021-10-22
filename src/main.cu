@@ -151,8 +151,8 @@ int main(int argc, char * argv[]){
   float *d_sigmoid_lookup_table;
   emb_t * h_embeddings=NULL;
   emb_t * d_embeddings=NULL;
-  vid_t* d_V;
-  vid_t* d_A;
+  vid_t* d_V=nullptr;
+  vid_t* d_A=nullptr;
   random_walk_training<vid_t, vid_t>* random_walker;
   unsigned long long size_of_shared_array; // shared memory size used by embedding kernels
 
@@ -315,9 +315,12 @@ int main(int argc, char * argv[]){
       CUDA_CHECK(cudaMemcpy(h_embeddings, d_embeddings, sizeof(emb_t) * graphs[i]->num_vertices * dimension, cudaMemcpyDeviceToHost));      
     } else {
       if (!switched_to_bg){
-        CUDA_CHECK(cudaFree(d_embeddings));
-        CUDA_CHECK(cudaFree(d_A));
-        CUDA_CHECK(cudaFree(d_V));
+        if (d_embeddings != nullptr)
+          CUDA_CHECK(cudaFree(d_embeddings));
+        if (d_A!= nullptr)
+          CUDA_CHECK(cudaFree(d_A));
+        if (d_V != nullptr)
+          CUDA_CHECK(cudaFree(d_V));
         switched_to_bg = true;
       }
       try{
