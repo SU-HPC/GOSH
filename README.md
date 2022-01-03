@@ -127,9 +127,30 @@ Many optional parameters can be used to fine-tune the embedding:
 - Adapted the positive sampling and embedding updates from the [VERSE](https://arxiv.org/abs/1803.04742) paper written by [Anton Tsitsulin](http://tsitsul.in/), [Davide Mottin](https://mott.in/), [Panagiotis Karras](https://scholar.google.com/citations?user=B6C4aBoAAAAJ&hl=en), and  [Emmanuel Müller](https://scholar.google.com/citations?user=gg0HkEsAAAAJ&hl=en) 
 - Used the Argparse header for C++ written by [Hilton Bristow](https://github.com/hbristow) to process CLI inputs: https://github.com/hbristow/argparse
 # Citation
-If you find our code useful for your research, please cite the GOSH paper:
+If you find our code useful for your research, please cite us:
 ```
-@inproceedings{10.1145/3404397.3404456,
+@ARTICLE{9623416,
+  author = {Alabsi Aljundi, Amro and Akyildiz, Taha Atahan and Kaya, Kamer},
+  journal = {IEEE Transactions on Parallel and Distributed Systems}, 
+  title = {Boosting Graph Embedding on a Single GPU}, 
+  year = {2021},
+  volume = {},
+  number = {},
+  pages = {1-1},
+  doi = {10.1109/TPDS.2021.3129617}
+}
+@INPROCEEDINGS{9377898,
+  author={Akyildiz, Taha Atahan and Alabsi Aljundi, Amro and Kaya, Kamer},
+  booktitle={2020 IEEE International Conference on Big Data (Big Data)}, 
+  title={Understanding Coarsening for Embedding Large-Scale Graphs}, 
+  year={2020},
+  volume={},
+  number={},
+  pages={2937-2946},
+  doi={10.1109/BigData50022.2020.9377898}
+}
+
+@INPROCEEDINGS{10.1145/3404397.3404456,
     author = {Akyildiz, Taha Atahan and Aljundi, Amro Alabsi and Kaya, Kamer},
     title = {GOSH: Embedding Big Graphs on Small Hardware},
     year = {2020},
@@ -144,6 +165,7 @@ If you find our code useful for your research, please cite the GOSH paper:
     keywords = {GPU, parallel graph algorithms, link prediction, Graph embedding, graph coarsening},
     location = {Edmonton, AB, Canada},
     series = {ICPP '20}
+    note = {Nominated for the best-paper award.}
 }
 ```
 
